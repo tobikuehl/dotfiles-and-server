@@ -1,6 +1,6 @@
 #!/bin/bash
-# Version 3.1
-# Erkennt automatisch Änderungen in Python-Funktionen
+# Version 3.2
+# Erkennt auch Änderungen in Bash-Funktionen.
 set -e
 
 # --- KONFIGURATION ---
@@ -86,7 +86,7 @@ for SOURCE_FILE in "${SORTED_FILES[@]}"; do
 
     # Technische Änderungen auslesen
     DIFF_STAT=$(git diff --cached --shortstat | xargs)
-    CHANGED_FUNCS=$(git diff --cached -U0 | grep -E "^@@.*@@ def " | sed -E 's/^@@.*@@ def ([^(]+).*/\1/' | sort -u | paste -sd ", " -)
+    CHANGED_FUNCS=$(git diff --cached -U0 | grep -E "^@@.*@@ (def |[a-zA-Z0-9_]+\s*\(\))" | sed -E 's/^@@.*@@ (def )?([a-zA-Z0-9_]+).*/\2/' | sort -u | paste -sd ", " -)
 
     AUTO_DETAILS="$DIFF_STAT"
     if [ -n "$CHANGED_FUNCS" ]; then
