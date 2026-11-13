@@ -1,16 +1,20 @@
 #!/bin/bash
-
-# Abbrechen bei Fehlern
+# Version 2
 set -e
 
 # --- KONFIGURATION ---
-# In diesen Dateinamen soll jede übergebene Python-Datei im Repo umbenannt werden
-TARGET_FILE="extract.py"
+FILE_ACTION="cp" # Entweder "cp" oder "mv"
+TARGET_FILE="4_cohens_rmse.py"
+TARGET_BASENAME="${TARGET_FILE%.*}"
+### --- ENDE der Konfiguration --- ###
+
+# --- SELF ---
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- VALIDIERUNG ---
 if [ "$#" -ne 1 ]; then
-    echo "❌ Fehler: Bitte genau eine Python-Datei übergeben!"
-    echo "Verwendung: ./commit_file.sh /pfad/zu/deiner_datei.py"
+    echo "❌ Fehler: Bitte genau eine Datei übergeben!"
+    echo "Verwendung: $0 /pfad/zu/deiner_datei.py"
     exit 1
 fi
 
@@ -21,33 +25,30 @@ if [ ! -f "$SOURCE_FILE" ]; then
     exit 1
 fi
 
-# --- DATUMSAUSLESUNG ---
-# Extrahiert das Änderungsdatum der Datei im Format YYYY-MM-DD HH:MM:SS
-# Funktioniert nativ unter GNU/Linux
-FILE_DATE=$(stat -c '%y' "$SOURCE_FILE" | cut -d'.' -f1)
+# WICHTIG: Vor dem Verzeichniswechsel das Datum und den Namen auslesen,
+# damit relative Pfade zu $SOURCE_FILE (z.B. "./test.py") noch stimmen!
+SOURCE_FILENAME=$(basename -- "$SOURCE_FILE")
+DATE=$(date -r "$SOURCE_FILE" -Iseconds)
 
-echo "📄 Datei erkannt: $SOURCE_FILE"
-echo "📅 Reales Änderungsdatum: $FILE_DATE"
-echo "💬 Bitte Commit-Kommentar eingeben (beenden mit ENTER):"
+echo "📄 Datei erkannt: $SOURCE_FILENAME"
+echo "📅 Letztes Änderungsdatum: $DATE"
+echo "💬 Ggf. Commit-Kommentar (beenden mit ENTER):"
 
-# Liest den Kommentar aus stdin
 read -r COMMIT_MSG
 
 if [ -z "$COMMIT_MSG" ]; then
-    echo "❌ Fehler: Commit-Kommentar darf nicht leer sein."
-    exit 1
+    COMMIT_MSG="Debug iteration: '${TARGET_BASENAME} (${SOURCE_FILENAME})'"
 fi
 
 # --- GIT OPERATIONEN ---
-# 1. Datei an den Zielort kopieren und umbenennen
-cp "$SOURCE_FILE" "$TARGET_FILE"
+# 1. Datei in den Repo-Ordner verschieben (funktioniert auch mit relativen Quellpfaden)
+$FILE_ACTION "$SOURCE_FILE" "$REPO_DIR/$TARGET_FILE"
 
-# 2. In Git stagen
+# 2. Ab hier direkt im Git-Repo arbeiten
+cd "$REPO_DIR"
 git add "$TARGET_FILE"
+GIT_AUTHOR_DATE="$DATE" GIT_COMMITTER_DATE="$DATE" git commit -m "$COMMIT_MSG"
 
-# 3. Historischen Commit ausführen
-GIT_AUTHOR_DATE="$FILE_DATE" GIT_COMMITTER_DATE="$FILE_DATE" git commit -m "$COMMIT_MSG"
-
-echo "✅ Erfolgreich committet mit Datum $FILE_DATE!"
-echo "------------------------------------------------"
+echo "✅ Erfolgreich in $REPO_DIR committet."
+echo "--------------------------------------------"
 exit 0
