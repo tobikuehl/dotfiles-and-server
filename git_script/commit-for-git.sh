@@ -1,24 +1,36 @@
 #!/bin/bash
-# Version 3.2
-# Erkennt auch Änderungen in Bash-Funktionen.
+# Version 4.0
+# Target-File wird zum Parameter, ist nicht mehr in der Konfiguration
 set -e
 
 # --- KONFIGURATION ---
-FILE_ACTION="cp -p" # Entweder "cp" oder "mv"
-TARGET_FILE="4_cohens_rmse.py"
-TARGET_BASENAME="${TARGET_FILE%.*}"
+FILE_ACTION="cp -p" # Entweder "cp -p" oder "mv"
 ### --- ENDE der Konfiguration --- ###
 
 # --- SELF ---
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE}")" && pwd)"
 SELF_PATH="$REPO_DIR/$(basename "${BASH_SOURCE}")"
 
-# --- VALIDIERUNG & FILTERUNG ---
-if [ "$#" -lt 1 ]; then
-    echo "❌ Fehler: Bitte mindestens eine Datei übergeben!"
-    echo "Verwendung: $0 /pfad/zu/dateien/*"
+# --- PARAMETER-AUSLESE & VALIDIERUNG ---
+if [ "$#" -lt 2 ]; then
+    echo "❌ Fehler: Bitte Zieldatei und mindestens eine Quelldatei übergeben!"
+    echo "Verwendung: $0 <zieldatei_im_repo> <quelldatei1> [quelldatei2 ...]"
+    echo "Beispiel:   $0 4_cohens_rmse.py /tmp/backups/*.py"
     exit 1
 fi
+
+# Erstes Argument ist die Zieldatei (nur Dateiname ohne eventuellen Pfad)
+TARGET_FILE=$(basename -- "$1")
+TARGET_BASENAME="${TARGET_FILE%.*}"
+
+# Sicherheitscheck: Verhindern, dass das Skript sich selbst überschreibt
+if [ "$REPO_DIR/$TARGET_FILE" = "$SELF_PATH" ]; then
+    echo "❌ Fehler: Die Zieldatei darf nicht das Skript selbst sein!"
+    exit 1
+fi
+
+# Erstes Argument ($1) entfernen, damit in "$@" nur noch die Quelldateien übrig bleiben
+shift
 
 VALID_FILES=()
 
@@ -27,12 +39,12 @@ for f in "$@"; do
     if [ -d "$f" ]; then
         continue
     fi
-    # 2. Prüfen, ob reguläre Datei existiert (fängt z.B. leere Wildcards ab)
+    # 2. Prüfen, ob reguläre Datei existiert
     if [ ! -f "$f" ]; then
-        echo "❌ Fehler: Datei '$f' existiert nicht."
+        echo "❌ Fehler: Quelldatei '$f' existiert nicht."
         exit 1
     fi
-    # 3. Das Skript selbst überspringen, falls es mit '*' erfasst wurde
+    # 3. Das Skript selbst überspringen, falls es per '*' erfasst wurde
     ABS_F="$(cd "$(dirname "$f")" && pwd)/$(basename "$f")"
     if [ "$ABS_F" = "$SELF_PATH" ]; then
         continue
@@ -41,17 +53,16 @@ for f in "$@"; do
     VALID_FILES+=("$f")
 done
 
-# Prüfen, ob nach dem Filtern überhaupt noch Dateien übrig sind
 if [ "${#VALID_FILES[@]}" -eq 0 ]; then
-    echo "❌ Fehler: Keine gültigen Dateien gefunden (nur Ordner übergeben?)."
+    echo "❌ Fehler: Keine gültigen Quelldateien gefunden."
     exit 1
 fi
 
-# Batch-Modus aktivieren, wenn mehr als 1 gültige Datei übrig ist
+# Batch-Modus aktivieren, wenn mehr als 1 Quelldatei übergeben wurde
 BATCH_MODE=false
 if [ "${#VALID_FILES[@]}" -gt 1 ]; then
     BATCH_MODE=true
-    echo "📦 Batch-Modus erkannt (${#VALID_FILES[@]} Dateien). Sortiere chronologisch..."
+    echo "📦 Batch-Modus für '$TARGET_FILE' (${#VALID_FILES[@]} Dateien). Sortiere chronologisch..."
 fi
 
 # --- CHRONOLOGISCHE SORTIERUNG ---
@@ -68,8 +79,9 @@ for SOURCE_FILE in "${SORTED_FILES[@]}"; do
     DATE=$(date -r "$ABS_SOURCE_FILE" -Iseconds)
 
     echo "-----------------------------------------"
-    echo "📄 Datei: $SOURCE_FILENAME"
-    echo "📅 Datum: $DATE"
+    echo "🎯 Ziel:   $TARGET_FILE"
+    echo "📄 Quelle: $SOURCE_FILENAME"
+    echo "📅 Datum:  $DATE"
 
     # Datei kopieren oder verschieben
     $FILE_ACTION "$ABS_SOURCE_FILE" "$REPO_DIR/$TARGET_FILE"
@@ -84,7 +96,7 @@ for SOURCE_FILE in "${SORTED_FILES[@]}"; do
         continue
     fi
 
-    # Technische Änderungen auslesen
+    # Technische Änderungen auslesen (erkennt Python- 'def' und Bash-Funktionen)
     DIFF_STAT=$(git diff --cached --shortstat | xargs)
     CHANGED_FUNCS=$(git diff --cached -U0 | grep -E "^@@.*@@ (def |[a-zA-Z0-9_]+\s*\(\))" | sed -E 's/^@@.*@@ (def )?([a-zA-Z0-9_]+).*/\2/' | sort -u | paste -sd ", " -)
 
