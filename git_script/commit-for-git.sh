@@ -1,56 +1,70 @@
 #!/bin/bash
-# Version 4.0
-# Target-File wird zum Parameter, ist nicht mehr in der Konfiguration
+# Version 5.0
+# Von einem Dotfile-Repo aus einsetzbar (Symlink-sicher)
+# Unterordner werden besser unterstützt
 set -e
 
 # --- KONFIGURATION ---
 FILE_ACTION="cp -p" # Entweder "cp -p" oder "mv"
 ### --- ENDE der Konfiguration --- ###
 
-# --- SELF ---
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE}")" && pwd)"
-SELF_PATH="$REPO_DIR/$(basename "${BASH_SOURCE}")"
+# Eigenen Pfad (inkl. Symlinks auflösen) merken
+SELF_PATH="$(readlink -f "${BASH_SOURCE}")"
 
 # --- PARAMETER-AUSLESE & VALIDIERUNG ---
 if [ "$#" -lt 2 ]; then
     echo "❌ Fehler: Bitte Zieldatei und mindestens eine Quelldatei übergeben!"
-    echo "Verwendung: $0 <zieldatei_im_repo> <quelldatei1> [quelldatei2 ...]"
-    echo "Beispiel:   $0 4_cohens_rmse.py /tmp/backups/*.py"
+    echo "Verwendung: $(basename "$0") <pfad/zur/zieldatei> <quelldatei1> [quelldatei2 ...]"
     exit 1
 fi
 
-# Erstes Argument ist die Zieldatei (nur Dateiname ohne eventuellen Pfad)
-TARGET_FILE=$(basename -- "$1")
-TARGET_BASENAME="${TARGET_FILE%.*}"
+# Ziel-Ordner und Ziel-Dateiname aus $1 ermitteln
+TARGET_INPUT="$1"
+TARGET_DIR_RAW="$(dirname -- "$TARGET_INPUT")"
+TARGET_FILENAME="$(basename -- "$TARGET_INPUT")"
+TARGET_BASENAME="${TARGET_FILENAME%.*}"
+
+if [ ! -d "$TARGET_DIR_RAW" ]; then
+    echo "❌ Fehler: Zielverzeichnis '$TARGET_DIR_RAW' existiert nicht."
+    exit 1
+fi
+
+# Absoluten Pfad des Zielverzeichnisses und das zugehörige Git-Repo ermitteln
+ABS_TARGET_DIR="$(cd "$TARGET_DIR_RAW" && pwd)"
+REPO_DIR="$(git -C "$ABS_TARGET_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+
+if [ -z "$REPO_DIR" ]; then
+    echo "❌ Fehler: '$ABS_TARGET_DIR' liegt in keinem Git-Repository!"
+    exit 1
+fi
+
+# Relativen Pfad der Zieldatei innerhalb des Repos bestimmen (funktioniert auch für Unterordner!)
+ABS_TARGET_FILE="$ABS_TARGET_DIR/$TARGET_FILENAME"
+REL_TARGET_FILE="${ABS_TARGET_FILE#$REPO_DIR/}"
 
 # Sicherheitscheck: Verhindern, dass das Skript sich selbst überschreibt
-if [ "$REPO_DIR/$TARGET_FILE" = "$SELF_PATH" ]; then
+if [ "$ABS_TARGET_FILE" = "$SELF_PATH" ]; then
     echo "❌ Fehler: Die Zieldatei darf nicht das Skript selbst sein!"
     exit 1
 fi
 
-# Erstes Argument ($1) entfernen, damit in "$@" nur noch die Quelldateien übrig bleiben
 shift
 
 VALID_FILES=()
 
 for f in "$@"; do
-    # 1. Unterordner stillschweigend überspringen
     if [ -d "$f" ]; then
         continue
     fi
-    # 2. Prüfen, ob reguläre Datei existiert
     if [ ! -f "$f" ]; then
         echo "❌ Fehler: Quelldatei '$f' existiert nicht."
         exit 1
     fi
-    # 3. Das Skript selbst überspringen, falls es per '*' erfasst wurde
-    ABS_F="$(cd "$(dirname "$f")" && pwd)/$(basename "$f")"
+    ABS_F="$(readlink -f "$f")"
     if [ "$ABS_F" = "$SELF_PATH" ]; then
         continue
     fi
-
-    VALID_FILES+=("$f")
+    VALID_FILES+=("$ABS_F")
 done
 
 if [ "${#VALID_FILES[@]}" -eq 0 ]; then
@@ -58,11 +72,10 @@ if [ "${#VALID_FILES[@]}" -eq 0 ]; then
     exit 1
 fi
 
-# Batch-Modus aktivieren, wenn mehr als 1 Quelldatei übergeben wurde
 BATCH_MODE=false
 if [ "${#VALID_FILES[@]}" -gt 1 ]; then
     BATCH_MODE=true
-    echo "📦 Batch-Modus für '$TARGET_FILE' (${#VALID_FILES[@]} Dateien). Sortiere chronologisch..."
+    echo "📦 Batch-Modus erkannt (${#VALID_FILES[@]} Dateien) für Repo: $REPO_DIR"
 fi
 
 # --- CHRONOLOGISCHE SORTIERUNG ---
@@ -73,30 +86,28 @@ mapfile -d '' SORTED_FILES < <(
 )
 
 # --- VERARBEITUNG ---
-for SOURCE_FILE in "${SORTED_FILES[@]}"; do
-    ABS_SOURCE_FILE="$(cd "$(dirname "$SOURCE_FILE")" && pwd)/$(basename "$SOURCE_FILE")"
-    SOURCE_FILENAME=$(basename -- "$SOURCE_FILE")
+for ABS_SOURCE_FILE in "${SORTED_FILES[@]}"; do
+    SOURCE_FILENAME=$(basename -- "$ABS_SOURCE_FILE")
     DATE=$(date -r "$ABS_SOURCE_FILE" -Iseconds)
 
     echo "-----------------------------------------"
-    echo "🎯 Ziel:   $TARGET_FILE"
+    echo "📂 Repo:   $(basename "$REPO_DIR")"
+    echo "🎯 Ziel:   $REL_TARGET_FILE"
     echo "📄 Quelle: $SOURCE_FILENAME"
     echo "📅 Datum:  $DATE"
 
     # Datei kopieren oder verschieben
-    $FILE_ACTION "$ABS_SOURCE_FILE" "$REPO_DIR/$TARGET_FILE"
+    $FILE_ACTION "$ABS_SOURCE_FILE" "$ABS_TARGET_FILE"
 
-    # Ins Repo wechseln
+    # Direkt im gefundenen Git-Repo arbeiten
     cd "$REPO_DIR"
-    git add "$TARGET_FILE"
+    git add "$REL_TARGET_FILE"
 
-    # Prüfen, ob es Änderungen gegenüber dem letzten Commit gibt
     if git diff --cached --quiet; then
         echo "⏭️  Übersprungen: Inhalt ist identisch zum letzten Commit."
         continue
     fi
 
-    # Technische Änderungen auslesen (erkennt Python- 'def' und Bash-Funktionen)
     DIFF_STAT=$(git diff --cached --shortstat | xargs)
     CHANGED_FUNCS=$(git diff --cached -U0 | grep -E "^@@.*@@ (def |[a-zA-Z0-9_]+\s*\(\))" | sed -E 's/^@@.*@@ (def )?([a-zA-Z0-9_]+).*/\2/' | sort -u | paste -sd ", " -)
 
@@ -105,7 +116,6 @@ for SOURCE_FILE in "${SORTED_FILES[@]}"; do
         AUTO_DETAILS="$AUTO_DETAILS | Funktionen: $CHANGED_FUNCS"
     fi
 
-    # Commit-Nachricht bestimmen
     if [ "$BATCH_MODE" = true ]; then
         COMMIT_MSG="Debug iteration: '${TARGET_BASENAME} (${SOURCE_FILENAME})' [${AUTO_DETAILS}]"
     else
@@ -116,7 +126,6 @@ for SOURCE_FILE in "${SORTED_FILES[@]}"; do
         fi
     fi
 
-    # Commit ausführen
     GIT_AUTHOR_DATE="$DATE" GIT_COMMITTER_DATE="$DATE" git commit -m "$COMMIT_MSG"
     echo "✅ Committet: $COMMIT_MSG"
 done
